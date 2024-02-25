@@ -70,6 +70,9 @@ Retrieving such an editable mesh for realistic rendering is done within minutes 
 <details>
 <summary><span style="font-weight: bold;">To-do list</span></summary>
 <ul>
+  <li><b>Viewer:</b> Add option to load the postprocessed mesh.</li>
+  <li><b>Mesh extraction:</b> Add the possibility to edit the extent of the background bounding box.</li>
+  <li><b>Tips&Tricks:</b> Add to the README.md file (and the webpage) some tips and tricks for using SuGaR on your own data and obtain better reconstructions (see the tips provided by user kitmallet).</li>
   <li><b>Improvement:</b> Add an <code>if</code> block to <code>sugar_extractors/coarse_mesh.py</code> to skip foreground mesh reconstruction and avoid triggering an error if no surface point is detected inside the foreground bounding box. This can be useful for users that want to reconstruct "<i>background scenes</i>". </li>
   <li><b>Using precomputed masks with SuGaR:</b> Add a mask functionality to the SuGaR optimization, to allow the user to mask out some pixels in the training images (like white backgrounds in synthetic datasets).
   </li>
@@ -395,7 +398,33 @@ Therefore, we recommend the following when using the `train.py` script:
 - For reconstructing detailed objects centered in the scene with 360° coverage (such as the toys we reconstructed in our presentation video), start with the density regularization `-r 'density'`. However, this may result in more chaotic Gaussians in the background.
 - For reconstructing more challenging scenes or enforcing a stronger regularization in the background, use the SDF regularization `-r 'sdf'`.
 
-### 4. (Optional) Adapt the scale and the bounding box of the scene
+### 4. I have holes in my mesh, what can I do?
+
+If you have holes in your mesh, this means the cleaning step of the Poisson mesh is too aggressive for your scene. You can reduce the treshold `vertices_density_quantile` used for cleaning by modifying line 43 of `sugar_extractors/coarse_mesh.py`. For example, you can change this line from
+```python
+  vertices_density_quantile = 0.1
+```
+to
+```python
+  vertices_density_quantile = 0.
+```
+
+### 5. I have messy ellipsoidal bumps on the surface of my mesh, what can I do?
+
+Depending on your scene, the default hyperparameters used for Poisson reconstruction may be too fine compared to the size of the Gaussians. Gaussian could then become visible on the mesh, which results in messy ellipsoidal bumps on the surface of the mesh.
+This could happen if the camera trajectory is very close to a simple foreground object, for example.<br>
+To fix this, you can reduce the depth of Poisson reconstruction `poisson_depth` by modifying line 42 of `sugar_extractors/coarse_mesh.py`. <br>
+For example, you can change line 42 from
+```python
+  poisson_depth = 10
+```
+to
+```python
+  poisson_depth = 7
+```
+You may also try `poisson_depth = 6`, or `poisson_depth = 8` if the result is not satisfying.
+
+### 6. (Optional) Adapt the scale and the bounding box of the scene
 
 As it is explained in the original <a href="https://github.com/graphdeco-inria/gaussian-splatting">3D Gaussian Splatting repository</a>, the method is expected to reconstruct a scene with reasonable scale. For reconstructing much larger datasets, like a city district, the original authors recommend to lower the learning rates of the positions and scaling factors of the Gaussians. The more extensive the scene, the lower these values should be.
 
