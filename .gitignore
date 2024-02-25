@@ -137,3 +137,9 @@ dmypy.json
 # Pyre type checker
 .pyre/
 learnableearthparser/fast_sampler/_sampler.c
+
+.vscode
+# data & exp
+runs
+data
+demopic

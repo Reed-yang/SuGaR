@@ -767,6 +767,7 @@ class SuGaR(nn.Module):
         areas = areas.abs()
         cum_probs = areas.cumsum(dim=-1) / areas.sum(dim=-1, keepdim=True)
         
+        # 随机采样
         random_indices = torch.multinomial(cum_probs, num_samples=num_samples, replacement=True)
         if mask is not None:
             valid_indices = torch.arange(self.n_points, device=self.device)[mask]

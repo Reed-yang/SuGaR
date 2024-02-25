@@ -9,6 +9,7 @@ from sugar_scene.sugar_model import SuGaR
 from sugar_scene.sugar_optimizer import OptimizationParams, SuGaROptimizer
 from sugar_scene.sugar_densifier import SuGaRDensifier
 from sugar_utils.loss_utils import ssim, l1_loss, l2_loss
+import torch.nn.functional as F
 
 from rich.console import Console
 import time
@@ -18,6 +19,8 @@ def coarse_training_with_sdf_regularization(args):
     CONSOLE = Console(width=120)
 
     # ====================Parameters====================
+
+    val_pixel_threshold = 0
 
     num_device = args.gpu
     detect_anomaly = False
@@ -525,6 +528,136 @@ def coarse_training_with_sdf_regularization(args):
                 # Compute loss 
                 loss = loss_fn(pred_rgb, gt_rgb)
                         
+                # # ====================Compute RS====================
+                # with torch.no_grad():
+                #     RS = 10 * torch.ones((sugar.image_height, sugar.image_width)).cuda()
+                #     ref_idx = camera_indices
+                #     height, width = gt_rgb.shape[-2:]
+                #     # ========获取与表面相交的像素3D坐标
+                #     fov_camera = nerfmodel.training_cameras.p3d_cameras[camera_indices.item()]
+                #     # 计算深度图
+                #     point_depth = fov_camera.get_world_to_view_transform().transform_points(sugar.points)[..., 2:].expand(-1, 3)
+                #     max_depth = point_depth.max()
+                #     depth = sugar.render_image_gaussian_rasterizer(
+                #                 camera_indices=camera_indices.item(),
+                #                 bg_color=max_depth + torch.zeros(3, dtype=torch.float, device=sugar.device),
+                #                 sh_deg=0,
+                #                 compute_color_in_rasterizer=False,#compute_color_in_rasterizer,
+                #                 compute_covariance_in_rasterizer=True,
+                #                 return_2d_radii=False,
+                #                 use_same_scale_in_all_directions=False,
+                #                 point_colors=point_depth,
+                #             )[..., 0]
+                #     # 计算 gaussians_close_to_surface
+                #     gaussian_to_camera = torch.nn.functional.normalize(fov_camera.get_camera_center() - sugar.points, dim=-1)
+                #     gaussian_centers_in_camera_space = fov_camera.get_world_to_view_transform().transform_points(sugar.points)
+                    
+                #     gaussian_centers_z = gaussian_centers_in_camera_space[..., 2] + 0.
+                #     gaussian_centers_map_z = sugar.get_points_depth_in_depth_map(fov_camera, depth, gaussian_centers_in_camera_space)
+                    
+                #     gaussian_standard_deviations = (
+                #         sugar.scaling * quaternion_apply(quaternion_invert(sugar.quaternions), gaussian_to_camera)
+                #         ).norm(dim=-1)
+                
+                #     gaussians_close_to_surface = (gaussian_centers_map_z - gaussian_centers_z).abs() < close_gaussian_threshold * gaussian_standard_deviations
+                #     ##=========== 将 gaussians_close_to_surface 投影回2D ===========
+                #     # 由于gaussians_close_to_surface点很多，\
+                #     # 会有多个点对应一个2D像素，设置一个阈值 val_pixel_threshold ，\
+                #     # 大于该阈值时认为从该2D像素能看到surface
+                #     image_plane_coor_with_z = fov_camera.transform_points_screen(sugar.points[gaussians_close_to_surface], image_size=(height, width)) # (num_pts, 3) 3个值 [W, H, zfar]
+                #     # image_plane_coor_wo_z = image_plane_coor_with_z[..., :-1].to(torch.int)
+                #     in_range_and_positive_depth = (
+                #         (image_plane_coor_with_z[:, 0] >= 0) & (image_plane_coor_with_z[:, 0] < height) &
+                #         (image_plane_coor_with_z[:, 1] >= 0) & (image_plane_coor_with_z[:, 1] < width) &
+                #         (image_plane_coor_with_z[:, 2] > 0)
+                #     )
+                #     image_plane_coor_wo_z = image_plane_coor_with_z[in_range_and_positive_depth][..., :-1].to(torch.int)
+                #     # TODO 不确定这里是否要根据深度选取靠近相机的点
+                #     # mask = 从相机的每个像素能否看到 surface 的掩码，形状为(height, width)
+                #     mask = torch.zeros( (height, width) , dtype=torch.bool)
+                #     counts = torch.bincount(image_plane_coor_wo_z[:, 0] * width + image_plane_coor_wo_z[:, 1], minlength=width*height)
+                #     counts_2d = counts.view(height, width)
+                #     mask[counts_2d > val_pixel_threshold ] = True
+
+                #     anchor_rgb = torch.zeros_like( gt_rgb.squeeze(0).permute(1, 2, 0) )
+                #     anchor_rgb[mask] = gt_rgb.squeeze(0).permute(1, 2, 0)[mask]
+
+                #     ##=========== 计算 coor = mask为True对应每个点的3D坐标，该3D坐标应该由 gaussians_close_to_surface 中由一个像素所看到的那些点的中心所确定
+                #     # 1. 过滤出有效的3D点坐标
+                #     valid_points = sugar.points[gaussians_close_to_surface][in_range_and_positive_depth]
+
+                #     # 2. 为每个有效点生成像素索引
+                #     pixel_indices = image_plane_coor_wo_z[:, 0] * width + image_plane_coor_wo_z[:, 1]
+
+                #     # 3. 初始化存储每个像素点坐标总和和计数的张量
+                #     points_sum = torch.zeros((height * width, 3), device=sugar.points.device)
+                #     counts = torch.zeros((height * width,), device=sugar.points.device)
+
+                #     # 4. 累加对应像素的点坐标和计数
+                #     points_sum.index_add_(0, pixel_indices, valid_points)
+                #     counts.index_add_(0, pixel_indices, torch.ones_like(pixel_indices, dtype=valid_points.dtype))
+
+                #     # 5. 计算每个像素点坐标的平均值
+                #     points_avg = points_sum / counts[..., None]
+
+                #     # 6. 将平均点坐标重塑回(height, width)格式
+                #     # 首先，我们需要将mask转换为一维索引，然后使用这些索引从points_avg中选择对应的坐标
+                #     mask_1d_indices = mask.flatten().nonzero().squeeze(-1)
+                #     coor = points_avg[mask_1d_indices]
+                    
+                #     fov_list = [nerfmodel.training_cameras.p3d_cameras[idx.item()] for idx in shuffled_idx]
+                #     grid = [cam.transform_points_screen(coor, image_size=(height, width)) for cam in fov_list]
+
+                #     grid = torch.stack(grid, dim=0) # [..., :-1].to(torch.int)
+                #     in_range_and_positive_depth = (
+                #         (grid[:, :, 0] >= 0) & (grid[:, :, 0] < height) &
+                #         (grid[:, :, 1] >= 0) & (grid[:, :, 1] < width) &
+                #         (grid[:, :, 2] > 0)
+                #     )
+                #     grid = grid[..., :-1].to(torch.int)
+
+                #     image_list = [nerfmodel.get_gt_image(camera_indices=idx).view(-1, sugar.image_height, sugar.image_width, 3).transpose(-1, -2).transpose(-2, -3).squeeze(0)  for idx in shuffled_idx]
+                #     image_list = torch.stack(image_list, dim=0).permute(0, 2, 3, 1)
+
+                #     anchor_flat_rgb = anchor_rgb.view(-1, 3) # [H*W, 3]
+                #     anchor_flat_rgb = anchor_flat_rgb[mask_1d_indices] # [num_of_val_pts, 3]
+
+                #     all_rgbs_warp = torch.zeros(len(nerfmodel.cam_list), len(mask_1d_indices), 3).to(sugar.device)
+
+                #     grid[~in_range_and_positive_depth] = 0
+
+                #     batch_indices = torch.arange(0, image_list.shape[0])[:, None]
+                #     all_rgbs_warp = image_list[batch_indices, grid[..., 0], grid[..., 1]]
+                #     all_rgbs_warp[in_range_and_positive_depth] = 0
+
+
+                #     all_rgbs_warp = all_rgbs_warp.transpose(0, 1)
+                #     rs_val_mask = in_range_and_positive_depth.transpose(0, 1)
+
+                #     # rgb_list = 
+                #     # grid = torch.stack(grid, dim=0)
+                #     # 从coor坐标，对于数据集中的每一个图片，投影到其对应图片上的像素点上 \
+                #     # grid = 以上投影生效的掩码
+                #     # all_rgbs_warp 根据 grid 从 数据集所有图片上提取颜色 # shape=( len(nerfmodel.cam_list), H, W, 3)
+                    
+                #     all_warp_color = torch.zeros_like(all_rgbs_warp).cuda()
+                #     all_warp_color[rs_val_mask.bool()] = torch.abs(all_rgbs_warp - anchor_flat_rgb[:, None, :].expand(all_rgbs_warp.size()))[rs_val_mask.bool()]
+                #     num_val = torch.sum(in_range_and_positive_depth, dim=0) # num_val 用来统计每个 mask 像素在其他所有图片上出现的次数
+                #     val_mean = torch.sum(all_warp_color, dim=-2) / num_val.unsqueeze(-1)
+                        
+                #     RS_temp = 10 * torch.ones((mask.shape[0])).cuda()
+                #     RS_temp = (val_mean.sum(-1) * 2 ).clamp(min=1., max=5.) # 先不考虑 _val_ind
+        
+                #     RS.flatten()[mask_1d_indices] = RS_temp
+                #     RS = RS.reshape(height, width)
+
+                # # Compute loss 
+                # # loss = loss_fn(pred_rgb, gt_rgb)
+                # # color_error = pred_rgb - gt_rgb
+                # # loss = (F.l1_loss(color_error, torch.zeros_like(color_error), reduction='none') / RS).mean()*10
+
+
+
                 if enforce_entropy_regularization and iteration > start_entropy_regularization_from and iteration < end_entropy_regularization_at:
                     if iteration == start_entropy_regularization_from + 1:
                         CONSOLE.print("\n---INFO---\nStarting entropy regularization.")
@@ -576,6 +709,7 @@ def coarse_training_with_sdf_regularization(args):
                                                 compute_covariance_in_rasterizer=True,
                                                 return_2d_radii=False,
                                                 use_same_scale_in_all_directions=False,
+                                                # 指定点的颜色，这里使用点的深度信息作为颜色，从而在渲染过程中直接计算深度图
                                                 point_colors=point_depth,
                                             )[..., 0]
                                 else:
@@ -613,6 +747,8 @@ def coarse_training_with_sdf_regularization(args):
                                         sampling_mask = sampling_mask * gaussians_close_to_surface
                             
                             n_gaussians_in_sampling = sampling_mask.sum()
+                            # 从靠近表面的高斯中 采样了num_samples个sdf样本
+                            # sdf_samples 貌似是sdf样本的3D坐标
                             if n_gaussians_in_sampling > 0:
                                 sdf_samples, sdf_gaussian_idx = sugar.sample_points_in_gaussians(
                                     num_samples=n_samples_for_sdf_regularization, 
@@ -721,6 +857,15 @@ def coarse_training_with_sdf_regularization(args):
                 if use_surface_mesh_normal_consistency_loss:
                     loss = loss + surface_mesh_normal_consistency_factor * mesh_normal_consistency(surface_mesh)
             
+
+            # ====================Compute RS====================
+            RS = 0
+            
+
+
+
+
+            # ====================Update Loss====================
             # Update parameters
             loss.backward()
             
